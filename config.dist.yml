@@ -1,0 +1,17 @@
+---
+grace-period: 60s
+
+proxy:
+  addr: localhost:8141
+  retry-interval: 3s
+
+  tls:
+    ca-cert: ca.pem
+    cert: cert.pem
+    key: key.pem
+
+control:
+  addr: localhost:8142
+
+upstream:
+  addr: af-puppet02.crm.ig.local:8140
