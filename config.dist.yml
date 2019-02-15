@@ -3,7 +3,10 @@ grace-period: 60s
 
 proxy:
   addr: localhost:8141
-  retry-interval: 3s
+  reject-clients: true
+  retry-after-interval: 3s
+  block-poll-interval: 100ms
+  close-poll-interval: 100ms
 
   tls:
     ca-cert: ca.pem

@@ -1,1 +1,1 @@
-# Puppet Proxy
+# GoZero
