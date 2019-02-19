@@ -11,6 +11,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -93,12 +94,12 @@ func New(cfg Config, logger Logger) (Server, error) {
 func (s *server) Start() error {
 	s.wg.Add(2)
 
-	err := s.setupProxy()
+	err := s.setup("proxy", s.cfg.Proxy.Addr, s.handleProxy)
 	if err != nil {
 		return err
 	}
 
-	return s.setupControl()
+	return s.setup("control", s.cfg.Control.Addr, s.handleControl)
 }
 
 // Stop gracefully shuts down the server
@@ -156,36 +157,24 @@ func createTLSConfig(tlsCfg TLSConfig) (cfg *tls.Config, err error) {
 	}, nil
 }
 
-// setupProxy starts the proxy server
-func (s *server) setupProxy() error {
-	l, err := net.Listen("tcp", s.cfg.Proxy.Addr)
+// setup starts up a server with its own listener and handler function
+func (s *server) setup(name, addr string, handler handler) error {
+	name = strings.ToLower(name)
+	l, err := net.Listen("tcp", addr)
 	if err != nil {
-		return errors.Wrap(err, "proxy failed to listen")
+		return errors.Wrapf(err, "%s failed to listen", name)
 	}
 
-	s.logger.Info(fmt.Sprintf("Proxy listening on %s", s.cfg.Proxy.Addr))
-	go s.handleListener(l, s.handleProxy)
-
-	return nil
-}
-
-// setupControl starts the control server
-func (s *server) setupControl() error {
-	l, err := net.Listen("tcp", s.cfg.Control.Addr)
-	if err != nil {
-		return errors.Wrap(err, "control failed to listen")
-	}
-
-	s.logger.Info(fmt.Sprintf("Control listening on %s", s.cfg.Control.Addr))
-	go s.handleListener(l, s.handleControl)
+	s.logger.Info(fmt.Sprintf("%s listening on %s", strings.Title(name), addr))
+	go s.handleListener(l, addr, handler)
 
 	return nil
 }
 
 // handleListener handles a listener using the specified handler function
-func (s *server) handleListener(l net.Listener, handler handler) {
+func (s *server) handleListener(l net.Listener, addr string, handler handler) {
 	defer s.wg.Done()
-	defer s.logger.Info(fmt.Sprintf("Listener %s shutdown", l.Addr().String()))
+	defer s.logger.Info(fmt.Sprintf("Listener %s shutdown", addr))
 
 	handler(l)
 }
@@ -223,7 +212,7 @@ func (s *server) handleProxy(l net.Listener) {
 
 		// handle client
 		s.wg.Add(1)
-		go s.handleConn(conn, s.wg)
+		go s.handleConn(conn)
 	}
 }
 
@@ -245,9 +234,9 @@ func (s *server) handleControl(l net.Listener) {
 }
 
 // handleConn handles one proxy connection
-func (s *server) handleConn(conn net.Conn, wg *sync.WaitGroup) {
+func (s *server) handleConn(conn net.Conn) {
 	defer func() {
-		wg.Done()
+		s.wg.Done()
 		s.logger.Debug("Closing proxy connection")
 
 		err := conn.Close()
@@ -268,14 +257,7 @@ func (s *server) handleConn(conn net.Conn, wg *sync.WaitGroup) {
 	}
 
 	// make a new connection to the upstream
-	addr, err := net.ResolveTCPAddr("tcp", s.cfg.Upstream.Addr)
-	if err != nil {
-		s.errChan <- errors.Wrapf(err, "failed to resolve upstream %s", s.cfg.Upstream)
-
-		return
-	}
-
-	upstream, err := net.DialTCP("tcp", nil, addr)
+	upstream, err := net.Dial("tcp", s.cfg.Upstream.Addr)
 	if err != nil {
 		s.errChan <- errors.Wrapf(err, "failed to connect to upstream %s", s.cfg.Upstream)
 
