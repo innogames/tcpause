@@ -49,18 +49,30 @@ func (l *logrusLogger) Info(msg string) {
 // init initializes the CLI
 func init() {
 	cobra.OnInitialize(loadConfig)
+	cmd.PersistentFlags().StringP("config", "c", "", "path to config file if any")
 	cmd.PersistentFlags().DurationP("grace-period", "g", 10*time.Second, "grace period for stopping the server")
 	cmd.PersistentFlags().String("proxy-addr", "localhost:3000", "proxy listen address")
-	cmd.PersistentFlags().Duration("proxy-retry-after-interval", 3*time.Second, "time after which the client should retry when paused")
+	cmd.PersistentFlags().Bool("proxy-reject-clients", false, "whether to accept the tls connection and reject with a 503 statuc code")
+	cmd.PersistentFlags().Duration("proxy-retry-after-interval", 3*time.Second, "time after which the client should retry when paused and rejected")
 	cmd.PersistentFlags().Duration("proxy-block-poll-interval", 100*time.Millisecond, "interval at which the state should be polled to continue blocked connections")
 	cmd.PersistentFlags().Duration("proxy-close-poll-interval", 100*time.Millisecond, "interval at which the proxy should poll whether to shutdown")
+	cmd.PersistentFlags().String("proxy-tls-ca-cert", "", "client ca cert if available")
+	cmd.PersistentFlags().String("proxy-tls-cert", "", "server cert if available")
+	cmd.PersistentFlags().String("proxy-tls-key", "", "server key if available")
 	cmd.PersistentFlags().String("control-addr", "localhost:3001", "control listen address")
-	_ = viper.BindPFlag("grace-period", cmd.PersistentFlags().Lookup("grace-period"))
-	_ = viper.BindPFlag("proxy.addr", cmd.PersistentFlags().Lookup("proxy-addr"))
-	_ = viper.BindPFlag("proxy.retry-after-interval", cmd.PersistentFlags().Lookup("proxy-retry-after-interval"))
-	_ = viper.BindPFlag("proxy.block-poll-interval", cmd.PersistentFlags().Lookup("proxy-block-poll-interval"))
-	_ = viper.BindPFlag("proxy.close-poll-interval", cmd.PersistentFlags().Lookup("proxy-close-poll-interval"))
-	_ = viper.BindPFlag("control.addr", cmd.PersistentFlags().Lookup("control-addr"))
+	cmd.PersistentFlags().String("upstream-addr", "localhost:3002", "upstream address")
+
+	_ = v.BindPFlag("grace-period", cmd.PersistentFlags().Lookup("grace-period"))
+	_ = v.BindPFlag("proxy.addr", cmd.PersistentFlags().Lookup("proxy-addr"))
+	_ = v.BindPFlag("proxy.reject-clients", cmd.PersistentFlags().Lookup("proxy-reject-clients"))
+	_ = v.BindPFlag("proxy.retry-after-interval", cmd.PersistentFlags().Lookup("proxy-retry-after-interval"))
+	_ = v.BindPFlag("proxy.block-poll-interval", cmd.PersistentFlags().Lookup("proxy-block-poll-interval"))
+	_ = v.BindPFlag("proxy.close-poll-interval", cmd.PersistentFlags().Lookup("proxy-close-poll-interval"))
+	_ = v.BindPFlag("proxy.tls.ca-cert", cmd.PersistentFlags().Lookup("proxy-tls-ca-cert"))
+	_ = v.BindPFlag("proxy.tls.cert", cmd.PersistentFlags().Lookup("proxy-tls-cert"))
+	_ = v.BindPFlag("proxy.tls.key", cmd.PersistentFlags().Lookup("proxy-tls-key"))
+	_ = v.BindPFlag("control.addr", cmd.PersistentFlags().Lookup("control-addr"))
+	_ = v.BindPFlag("upstream.addr", cmd.PersistentFlags().Lookup("upstream-addr"))
 }
 
 // main entry point
@@ -103,13 +115,22 @@ func run(cmd *cobra.Command, args []string) {
 
 // loadConfig loads and parses the config file
 func loadConfig() {
+	path, err := cmd.PersistentFlags().GetString("config")
+	if err != nil {
+		logger.WithError(err).Fatal("Could not get config path")
+	}
+
 	// configure viper
-	v.SetConfigName("config")
-	v.AddConfigPath("/etc/puppetlabs/puppet-proxy")
-	v.AddConfigPath(".")
+	if path != "" {
+		v.SetConfigFile(path)
+	} else {
+		v.SetConfigName("config")
+		v.AddConfigPath("/etc/puppetlabs/puppet-proxy")
+		v.AddConfigPath(".")
+	}
 
 	// read config
-	err := v.ReadInConfig()
+	err = v.ReadInConfig()
 	if err != nil {
 		logger.WithError(err).Fatal("Could not read config")
 	}
