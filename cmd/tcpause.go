@@ -4,7 +4,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"gitlab.innogames.de/sysadmins/gozero"
+	"gitlab.innogames.de/sysadmins/tcpause"
 	"os"
 	"os/signal"
 	"sync"
@@ -13,12 +13,12 @@ import (
 )
 
 var (
-	cfg gozero.Config
+	cfg tcpause.Config
 
 	v      = viper.New()
 	logger = logrus.New()
 	cmd    = &cobra.Command{
-		Use:   "gozero",
+		Use:   "tcpause",
 		Short: "Zero-downtime proxy for any TCP backend",
 		Run:   run,
 	}
@@ -30,6 +30,23 @@ var (
 	}
 )
 
+// logrusLogger wraps a logrus logger for compatibility with the tcpause library
+type logrusLogger struct {
+	tcpause.Logger
+	l *logrus.Logger
+}
+
+// Debug logs debug messages
+func (l *logrusLogger) Debug(msg string) {
+	l.l.Debug(msg)
+}
+
+// Info logs debug messages
+func (l *logrusLogger) Info(msg string) {
+	l.l.Info(msg)
+}
+
+// init initializes the CLI
 func init() {
 	cobra.OnInitialize(loadConfig)
 	cmd.PersistentFlags().DurationP("grace-period", "g", 10*time.Second, "grace period for stopping the server")
@@ -57,14 +74,19 @@ func main() {
 
 // run runs the command
 func run(cmd *cobra.Command, args []string) {
-	srv, err := gozero.NewServer(cfg, logger)
+	l := &logrusLogger{l: logger}
+	srv, err := tcpause.New(cfg, l)
 	if err != nil {
 		logger.WithError(err).Fatal("Could not create server")
 	}
 
 	// run it
 	logger.Info("Starting server")
-	srv.Start()
+	err = srv.Start()
+	if err != nil {
+		logger.WithError(err).Fatal("Failed starting the server")
+	}
+
 	go func() {
 		for err := range srv.Errors() {
 			logger.WithError(err).Error("Encountered an unexpected error")
@@ -100,7 +122,7 @@ func loadConfig() {
 }
 
 // handleInterrupt takes care of signals and graceful shutdowns
-func handleInterrupt(srv gozero.Server, wg *sync.WaitGroup) {
+func handleInterrupt(srv tcpause.Server, wg *sync.WaitGroup) {
 	c := make(chan os.Signal, 1)
 	defer close(c)
 
@@ -115,7 +137,7 @@ func handleInterrupt(srv gozero.Server, wg *sync.WaitGroup) {
 	os.Exit(1)
 }
 
-func stop(srv gozero.Server, wg *sync.WaitGroup) {
+func stop(srv tcpause.Server, wg *sync.WaitGroup) {
 	if err := srv.Stop(); err != nil {
 		logger.WithError(err).Fatalf("Failed to properly stop the server")
 	}

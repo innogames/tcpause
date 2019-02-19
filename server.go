@@ -1,4 +1,4 @@
-package gozero
+package tcpause
 
 import (
 	"context"
@@ -13,9 +13,9 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
-	"github.com/sirupsen/logrus"
 )
+
+type handler func(l net.Listener)
 
 // TLSConfig holds all config values related to TLS
 type TLSConfig struct {
@@ -55,7 +55,7 @@ type Config struct {
 // server types
 type server struct {
 	cfg     Config
-	logger  *logrus.Logger
+	logger  Logger
 	done    chan struct{}
 	srv     *http.Server
 	paused  bool
@@ -66,13 +66,13 @@ type server struct {
 
 // Server represents a server instance
 type Server interface {
-	Start()
+	Start() error
 	Stop() error
 	Errors() <-chan error
 }
 
-// NewServer creates a new server instance
-func NewServer(cfg Config, logger *logrus.Logger) (Server, error) {
+// New creates a new server instance
+func New(cfg Config, logger Logger) (Server, error) {
 	tlsCfg, err := createTLSConfig(cfg.Proxy.TLS)
 	if err != nil {
 		return nil, err
@@ -90,11 +90,15 @@ func NewServer(cfg Config, logger *logrus.Logger) (Server, error) {
 }
 
 // Start starts up the server
-func (s *server) Start() {
+func (s *server) Start() error {
 	s.wg.Add(2)
 
-	go s.setupProxy()
-	go s.setupControl()
+	err := s.setupProxy()
+	if err != nil {
+		return err
+	}
+
+	return s.setupControl()
 }
 
 // Stop gracefully shuts down the server
@@ -153,54 +157,49 @@ func createTLSConfig(tlsCfg TLSConfig) (cfg *tls.Config, err error) {
 }
 
 // setupProxy starts the proxy server
-func (s *server) setupProxy() {
-	defer s.wg.Done()
-	defer s.logger.Info("Proxy shutdown")
-
+func (s *server) setupProxy() error {
 	l, err := net.Listen("tcp", s.cfg.Proxy.Addr)
 	if err != nil {
-		s.errChan <- errors.Wrapf(err, "proxy failed to listen on %s", s.cfg.Proxy.Addr)
-
-		return
+		return errors.Wrap(err, "proxy failed to listen")
 	}
 
-	s.logger.Infof("Proxy listening on %s", s.cfg.Proxy.Addr)
-	s.serveListener(l, s.wg)
+	s.logger.Info(fmt.Sprintf("Proxy listening on %s", s.cfg.Proxy.Addr))
+	go s.handleListener(l, s.handleProxy)
 
-	if err = l.Close(); err != nil {
-		s.errChan <- errors.Wrap(err, "could not close proxy listener")
-	}
+	return nil
 }
 
 // setupControl starts the control server
-func (s *server) setupControl() {
-	defer s.wg.Done()
-	defer s.logger.Info("Control shutdown")
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/paused", s.handlePaused)
-
-	s.srv = &http.Server{
-		Addr:    s.cfg.Control.Addr,
-		Handler: mux,
+func (s *server) setupControl() error {
+	l, err := net.Listen("tcp", s.cfg.Control.Addr)
+	if err != nil {
+		return errors.Wrap(err, "control failed to listen")
 	}
 
-	s.logger.Infof("Control listening on %s", s.cfg.Control.Addr)
-	err := s.srv.ListenAndServe()
+	s.logger.Info(fmt.Sprintf("Control listening on %s", s.cfg.Control.Addr))
+	go s.handleListener(l, s.handleControl)
 
-	// server closed abnormally
-	if err != nil && err != http.ErrServerClosed {
-		err = errors.Wrapf(err, "control failed to listen on %s", s.cfg.Control.Addr)
-		s.errChan <- err
-	}
+	return nil
 }
 
-// serveListener handles incoming client connections
-func (s *server) serveListener(l net.Listener, wg *sync.WaitGroup) {
+// handleListener handles a listener using the specified handler function
+func (s *server) handleListener(l net.Listener, handler handler) {
+	defer s.wg.Done()
+	defer s.logger.Info(fmt.Sprintf("Listener %s shutdown", l.Addr().String()))
+
+	handler(l)
+}
+
+// handleControl handles all incoming connections to the proxy server
+func (s *server) handleProxy(l net.Listener) {
 	for {
 		// do not accept any new connections when server is about to close
 		select {
 		case <-s.done:
+			if err := l.Close(); err != nil {
+				s.errChan <- errors.Wrap(err, "could not close proxy listener")
+			}
+
 			return
 
 		default:
@@ -223,12 +222,29 @@ func (s *server) serveListener(l net.Listener, wg *sync.WaitGroup) {
 		}
 
 		// handle client
-		wg.Add(1)
-		go s.handleConn(conn, wg)
+		s.wg.Add(1)
+		go s.handleConn(conn, s.wg)
 	}
 }
 
-// handleConn handles one client connection
+// handleControl handles all incoming connections to the control server
+func (s *server) handleControl(l net.Listener) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/paused", s.handlePaused)
+
+	s.srv = &http.Server{
+		Handler: mux,
+	}
+	err := s.srv.Serve(l)
+
+	// server closed abnormally
+	if err != nil && err != http.ErrServerClosed {
+		err = errors.Wrap(err, "control failed")
+		s.errChan <- err
+	}
+}
+
+// handleConn handles one proxy connection
 func (s *server) handleConn(conn net.Conn, wg *sync.WaitGroup) {
 	defer func() {
 		wg.Done()
@@ -266,7 +282,7 @@ func (s *server) handleConn(conn net.Conn, wg *sync.WaitGroup) {
 		return
 	}
 
-	s.logger.Debugf("Connected to upstream %s", s.cfg.Upstream)
+	s.logger.Debug(fmt.Sprintf("Connected to upstream %s", s.cfg.Upstream))
 
 	// proxy the connection bidirectionally
 	errChan := make(chan error, 1)

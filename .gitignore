@@ -1,2 +1,4 @@
 config.yml
 *.pem
+build/
+completion.sh
