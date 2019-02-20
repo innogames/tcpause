@@ -2,7 +2,7 @@
 grace-period: 60s
 
 proxy:
-  addr: localhost:3000
+  addr: tcp://localhost:3000
   reject-clients: true
   retry-after-interval: 3s
   block-poll-interval: 100ms
@@ -14,7 +14,7 @@ proxy:
     key: key.pem
 
 control:
-  addr: localhost:3001
+  addr: tcp://localhost:3001
 
 upstream:
-  addr: localhost:3002
+  addr: tcp://localhost:3002

@@ -11,6 +11,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -74,9 +75,14 @@ type Server interface {
 
 // New creates a new server instance
 func New(cfg Config, logger Logger) (Server, error) {
-	tlsCfg, err := createTLSConfig(cfg.Proxy.TLS)
-	if err != nil {
-		return nil, err
+	var tlsCfg *tls.Config
+	var err error
+
+	if cfg.Proxy.TLS.CaCert != "" && cfg.Proxy.TLS.Cert != "" && cfg.Proxy.TLS.Key != "" {
+		tlsCfg, err = createTLSConfig(cfg.Proxy.TLS)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return &server{
@@ -159,13 +165,18 @@ func createTLSConfig(tlsCfg TLSConfig) (cfg *tls.Config, err error) {
 
 // setup starts up a server with its own listener and handler function
 func (s *server) setup(name, addr string, handler handler) error {
+	scheme, addr, err := parseAddr(addr)
+	if err != nil {
+		return err
+	}
+
 	name = strings.ToLower(name)
-	l, err := net.Listen("tcp", addr)
+	l, err := net.Listen(scheme, addr)
 	if err != nil {
 		return errors.Wrapf(err, "%s failed to listen", name)
 	}
 
-	s.logger.Info(fmt.Sprintf("%s listening on %s", strings.Title(name), addr))
+	s.logger.Info(fmt.Sprintf("%s listening on %s", strings.Title(name), l.Addr().String()))
 	go s.handleListener(l, addr, handler)
 
 	return nil
@@ -174,18 +185,20 @@ func (s *server) setup(name, addr string, handler handler) error {
 // handleListener handles a listener using the specified handler function
 func (s *server) handleListener(l net.Listener, addr string, handler handler) {
 	defer s.wg.Done()
-	defer s.logger.Info(fmt.Sprintf("Listener %s shutdown", addr))
+	defer s.logger.Info(fmt.Sprintf("Listener %s shutdown", l.Addr().String()))
 
 	handler(l)
 }
 
 // handleControl handles all incoming connections to the proxy server
 func (s *server) handleProxy(l net.Listener) {
+	var err error
+
 	for {
 		// do not accept any new connections when server is about to close
 		select {
 		case <-s.done:
-			if err := l.Close(); err != nil {
+			if err = l.Close(); err != nil {
 				s.errChan <- errors.Wrap(err, "could not close proxy listener")
 			}
 
@@ -195,7 +208,14 @@ func (s *server) handleProxy(l net.Listener) {
 		}
 
 		// force next iteration of the loop after some time so that we can poll shutdown requests
-		err := l.(*net.TCPListener).SetDeadline(time.Now().Add(s.cfg.Proxy.ClosePollInterval))
+		switch l.(type) {
+		case *net.TCPListener:
+			err = l.(*net.TCPListener).SetDeadline(time.Now().Add(s.cfg.Proxy.ClosePollInterval))
+		case *net.UnixListener:
+			err = l.(*net.UnixListener).SetDeadline(time.Now().Add(s.cfg.Proxy.ClosePollInterval))
+		default:
+			err = nil
+		}
 		if err != nil {
 			s.errChan <- errors.Wrap(err, "could not set deadline on listener")
 		}
@@ -257,14 +277,20 @@ func (s *server) handleConn(conn net.Conn) {
 	}
 
 	// make a new connection to the upstream
-	upstream, err := net.Dial("tcp", s.cfg.Upstream.Addr)
+	scheme, addr, err := parseAddr(s.cfg.Upstream.Addr)
 	if err != nil {
-		s.errChan <- errors.Wrapf(err, "failed to connect to upstream %s", s.cfg.Upstream)
+		s.errChan <- errors.Wrapf(err, "failed to connect to upstream %s", s.cfg.Upstream.Addr)
+
+		return
+	}
+	upstream, err := net.Dial(scheme, addr)
+	if err != nil {
+		s.errChan <- errors.Wrapf(err, "failed to connect to upstream %s", s.cfg.Upstream.Addr)
 
 		return
 	}
 
-	s.logger.Debug(fmt.Sprintf("Connected to upstream %s", s.cfg.Upstream))
+	s.logger.Debug(fmt.Sprintf("Connected to upstream %s", s.cfg.Upstream.Addr))
 
 	// proxy the connection bidirectionally
 	errChan := make(chan error, 1)
@@ -351,4 +377,26 @@ func (s *server) getPausedStatus(w http.ResponseWriter) {
 func (s *server) setPausedStatus(w http.ResponseWriter, paused bool) {
 	s.paused = paused
 	w.WriteHeader(200)
+}
+
+// parseAddr parses schema and host/path from a URI for use with net.Dial/Listen
+func parseAddr(addr string) (s string, a string, err error) {
+	u, err := url.Parse(addr)
+	if err != nil {
+		return
+	}
+
+	s = u.Scheme
+	switch s {
+	case "unix":
+		a = u.Path
+	case "tcp":
+		a = u.Host
+	default:
+		err = fmt.Errorf("scheme %s not supported", s)
+
+		return
+	}
+
+	return
 }
