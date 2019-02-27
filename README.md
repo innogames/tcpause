@@ -38,7 +38,7 @@ This essentially enables zero-downtime deployments of any TCP/UNIX socket-based 
 
 If you want to run it as a standalone application you can go install it:
 ```
-$ go install github.com/innogames/tcpause/cmd/tcpause
+$ go install github.com/innogames/tcpause/tcpause
 ```
 
 To use the library for your own project simply go get it: 
