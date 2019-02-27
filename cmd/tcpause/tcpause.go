@@ -1,4 +1,4 @@
-package main
+package tcpause
 
 import (
 	"github.com/sirupsen/logrus"
@@ -15,10 +15,17 @@ import (
 var (
 	cfg tcpause.Config
 
+	splash = `______________________________                             
+\__    ___/\_   ___ \______   \_____   __ __  ______ ____  
+  |    |   /    \  \/|     ___/\__  \ |  |  \/  ___// __ \ 
+  |    |   \     \___|    |     / __ \|  |  /\___ \\  ___/ 
+  |____|    \______  /____|    (____  /____//____  >\___  >
+                   \/               \/           \/     \/`
 	v      = viper.New()
 	logger = logrus.New()
 	cmd    = &cobra.Command{
 		Use:   "tcpause",
+		Long:  splash,
 		Short: "Zero-downtime proxy for any TCP backend",
 		Run:   run,
 	}
