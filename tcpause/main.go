@@ -1,10 +1,10 @@
 package main
 
 import (
+	"github.com/innogames/tcpause"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"gitlab.innogames.de/sysadmins/tcpause"
 	"os"
 	"os/signal"
 	"sync"
