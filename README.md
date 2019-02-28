@@ -5,7 +5,7 @@ TCPause is a zero-downtime proxy for TCP and UNIX sockets written in Go.
 [![Build Status](https://travis-ci.org/innogames/tcpause.svg)](https://travis-ci.org/innogames/tcpause)
 [![GoDoc](https://godoc.org/github.com/innogames/tcpause?status.svg)](https://godoc.org/github.com/innogames/tcpause)
 [![Go Report Card](https://goreportcard.com/badge/github.com/innogames/tcpause)](https://goreportcard.com/report/github.com/innogames/tcpause)
-[![Release](https://img.shields.io/github/release/innogames/tcpause.svg?style=flat-square)](https://github.com/innogames/tcpause/releases)
+[![Release](https://img.shields.io/github/release/innogames/tcpause.svg)](https://github.com/innogames/tcpause/releases)
 
 ## Contents
 

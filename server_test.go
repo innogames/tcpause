@@ -104,12 +104,6 @@ func init() {
 	go mockUpstream()
 }
 
-func config() Config {
-	return Config{
-
-	}
-}
-
 func TestNullLogger(t *testing.T) {
 	t.Run("New server without TLS config should return no error", func(t *testing.T) {
 		cfg := Config{}
