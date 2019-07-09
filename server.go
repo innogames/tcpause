@@ -390,7 +390,14 @@ func (s *server) getPausedStatus(w http.ResponseWriter) {
 // setPausedStatus sets the desired state
 func (s *server) setPausedStatus(w http.ResponseWriter, paused bool) {
 	s.paused = paused
-	w.WriteHeader(http.StatusOK)
+
+	var code int
+	if paused {
+		code = http.StatusCreated
+	} else {
+		code = http.StatusNoContent
+	}
+	w.WriteHeader(code)
 }
 
 // parseAddr parses schema and host/path from a URI for use with net.Dial/Listen
@@ -426,5 +433,5 @@ func (s *server) handleBlockUntilIdle(w http.ResponseWriter, req *http.Request) 
 	}
 
 	s.clientWg.Wait()
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(http.StatusNoContent)
 }
