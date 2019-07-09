@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"github.com/pkg/errors"
 	"io"
 	"io/ioutil"
 	"math"
@@ -15,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
 type handler func(l net.Listener)
@@ -56,14 +57,15 @@ type Config struct {
 
 // server types
 type server struct {
-	cfg     Config
-	logger  Logger
-	done    chan struct{}
-	srv     *http.Server
-	paused  bool
-	tlsCfg  *tls.Config
-	wg      *sync.WaitGroup
-	errChan chan error
+	cfg      Config
+	logger   Logger
+	done     chan struct{}
+	srv      *http.Server
+	paused   bool
+	tlsCfg   *tls.Config
+	srvWg    *sync.WaitGroup
+	clientWg *sync.WaitGroup
+	errChan  chan error
 }
 
 // Server represents a server instance
@@ -86,19 +88,20 @@ func New(cfg Config, logger Logger) (Server, error) {
 	}
 
 	return &server{
-		cfg:     cfg,
-		logger:  logger,
-		done:    make(chan struct{}, 1),
-		paused:  false,
-		tlsCfg:  tlsCfg,
-		wg:      new(sync.WaitGroup),
-		errChan: make(chan error, 100),
+		cfg:      cfg,
+		logger:   logger,
+		done:     make(chan struct{}, 1),
+		paused:   false,
+		tlsCfg:   tlsCfg,
+		srvWg:    new(sync.WaitGroup),
+		clientWg: new(sync.WaitGroup),
+		errChan:  make(chan error, 100),
 	}, nil
 }
 
 // Start starts up the server
 func (s *server) Start() error {
-	s.wg.Add(2)
+	s.srvWg.Add(2)
 
 	err := s.setup("proxy", s.cfg.Proxy.Addr, s.handleProxy)
 	if err != nil {
@@ -116,7 +119,7 @@ func (s *server) Stop() error {
 	err := s.srv.Shutdown(ctx)
 	cancel()
 
-	s.wg.Wait()
+	s.srvWg.Wait()
 
 	return err
 }
@@ -159,7 +162,7 @@ func createTLSConfig(tlsCfg TLSConfig) (cfg *tls.Config, err error) {
 		RootCAs:      cas,
 		ClientCAs:    cas,
 		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientAuth:   tls.VerifyClientCertIfGiven,
 	}, nil
 }
 
@@ -184,7 +187,7 @@ func (s *server) setup(name, addr string, handler handler) error {
 
 // handleListener handles a listener using the specified handler function
 func (s *server) handleListener(l net.Listener, addr string, handler handler) {
-	defer s.wg.Done()
+	defer s.srvWg.Done()
 	defer s.logger.Info(fmt.Sprintf("Listener %s shutdown", l.Addr().String()))
 
 	handler(l)
@@ -231,7 +234,7 @@ func (s *server) handleProxy(l net.Listener) {
 		}
 
 		// handle client
-		s.wg.Add(1)
+		s.clientWg.Add(1)
 		go s.handleConn(conn)
 	}
 }
@@ -240,6 +243,7 @@ func (s *server) handleProxy(l net.Listener) {
 func (s *server) handleControl(l net.Listener) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/paused", s.handlePaused)
+	mux.HandleFunc("/paused/block-until-idle", s.handleBlockUntilIdle)
 
 	s.srv = &http.Server{
 		Handler: mux,
@@ -256,7 +260,7 @@ func (s *server) handleControl(l net.Listener) {
 // handleConn handles one proxy connection
 func (s *server) handleConn(conn net.Conn) {
 	defer func() {
-		s.wg.Done()
+		s.clientWg.Done()
 		s.logger.Debug("Closing proxy connection")
 
 		err := conn.Close()
@@ -313,7 +317,7 @@ func (s *server) proxyConn(errChan chan<- error, dst, src net.Conn) {
 
 // rejectConn actually accepts the TLS connection and sends proper http codes and headers
 // so that the client knows when it can give it another try
-func (s *server) rejectConn(conn net.Conn) *tls.Conn {
+func (s *server) rejectConn(conn net.Conn) net.Conn {
 	resp := fmt.Sprintf(
 		"HTTP/1.1 %d %s",
 		http.StatusServiceUnavailable,
@@ -324,13 +328,22 @@ func (s *server) rejectConn(conn net.Conn) *tls.Conn {
 	if retryAfter.Seconds() > 0 {
 		resp += fmt.Sprintf("\r\nRetry-After: %d", int(math.Ceil(s.cfg.Proxy.RetryAfterInterval.Seconds())))
 	}
-
 	resp += "\r\n\r\n"
 
+	// try to send response over TLS
 	tlsConn := tls.Server(conn, s.tlsCfg)
 	_, err := tlsConn.Write([]byte(resp))
+
+	// this is very ugly but in case the connection is in fact not TLS,
+	// we try to send the response again over the plain connection
+	// TODO: find a better solution to distinguish TLS from non-TLS
 	if err != nil {
-		s.errChan <- errors.Wrap(err, "could not send response")
+		_, err = conn.Write([]byte(resp))
+		if err != nil {
+			s.errChan <- errors.Wrap(err, "could not send response")
+		}
+
+		return tlsConn
 	}
 
 	return tlsConn
@@ -353,13 +366,14 @@ func (s *server) handlePaused(w http.ResponseWriter, req *http.Request) {
 	case http.MethodDelete:
 		s.setPausedStatus(w, false)
 	default:
-		w.WriteHeader(405)
+		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
 
 // getPausedStatus sends the current state to the client
 func (s *server) getPausedStatus(w http.ResponseWriter) {
-	w.WriteHeader(200)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
 
 	var err error
 	if s.paused {
@@ -376,7 +390,7 @@ func (s *server) getPausedStatus(w http.ResponseWriter) {
 // setPausedStatus sets the desired state
 func (s *server) setPausedStatus(w http.ResponseWriter, paused bool) {
 	s.paused = paused
-	w.WriteHeader(200)
+	w.WriteHeader(http.StatusOK)
 }
 
 // parseAddr parses schema and host/path from a URI for use with net.Dial/Listen
@@ -399,4 +413,18 @@ func parseAddr(addr string) (s string, a string, err error) {
 	}
 
 	return
+}
+
+// handleBlockUntilIdle blocks for so long as there are unfinished requests running
+// this allows someone to pause the server, then wait for all requests to finish
+// and then do whatever is to be done on the upstream server
+func (s *server) handleBlockUntilIdle(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+
+		return
+	}
+
+	s.clientWg.Wait()
+	w.WriteHeader(http.StatusOK)
 }
