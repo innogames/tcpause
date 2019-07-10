@@ -15,6 +15,11 @@ TCPause is a zero-downtime proxy for TCP and UNIX sockets written in Go.
 - [Usage](#usage)
   - [Example Config](#example-config)
   - [CLI](#cli)
+  - [HTTP](#http)
+    - [Pause Status](#pause-status)
+    - [Pause Proxy](#pause-proxy)
+    - [Resume Proxy](#resume-proxy)
+    - [Block Until Idle](#block-until-idle)
 
 ## General
 
@@ -106,3 +111,62 @@ Flags:
       --proxy-tls-key string                  server key if available
       --upstream-addr string                  upstream address (default "localhost:3002")
 ```
+
+### HTTP
+
+TCPause also starts a control server which can take normal HTTP requests to block and resume connections to the proxy server.
+Also it is possible to wait until all proxied connections are closed/done.
+
+This makes it possible to block any new connections to the upstream, then wait for all running connections to finish, do whatever kind of magic you want to do on your upstream and then allow new connections again.
+It basically allows for zero-downtime maintenance work on your servers.
+
+#### Pause Status
+
+With a GET request you can retrieve the current pause status:
+```
+$ curl -i http://localhost:3001/paused
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Tue, 09 Jul 2019 14:59:16 GMT
+Content-Length: 17
+
+{"paused": false}
+```
+
+#### Pause Proxy
+
+With a PUT request you can "put" the proxy server into the paused state:
+```
+$ curl -iXPUT http://localhost:3001/paused
+HTTP/1.1 201 Created
+Date: Tue, 09 Jul 2019 15:01:00 GMT
+Content-Length: 0
+
+```
+This will not pause any existing connections though.
+See [Block Until Idle](#block-until-idle) on how to let the existing connections finish.
+
+#### Resume Proxy
+
+With a DELETE request you can resume the proxy server:
+```
+$ curl -iXDELETE http://localhost:3001/paused
+HTTP/1.1 204 No Content
+Date: Tue, 09 Jul 2019 15:02:21 GMT
+Content-Length: 0
+
+```
+Any new connection to the proxy server will be handled normally from now on.
+
+#### Block Until Idle
+
+With another GET request you can block for as long as there are active connections left on the proxy:
+```
+$ curl -i http://localhost:3001/paused/block-until-idle
+HTTP/1.1 204 No Content
+Date: Tue, 09 Jul 2019 15:03:15 GMT
+Content-Length: 0
+
+```
+This call will immediately return as soon as all proxy connections have been finished.
+Beware that you should [Pause the Proxy](#pause-proxy) before invoking this call as otherwise it might block forever depending on your workload.
